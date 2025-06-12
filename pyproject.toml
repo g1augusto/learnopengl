@@ -1,0 +1,3 @@
+[tool.pylint.'MESSAGES CONTROL']
+max-line-length = 170
+disable = "no-else-return,inconsistent-return-statements, simplifiable-if-statement, too-many-branches, too-many-nested-blocks, too-many-statements,too-many-locals,invalid-name"
