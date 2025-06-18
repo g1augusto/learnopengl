@@ -49,7 +49,7 @@ Thank you Joey for your amazing material, I hope you can deliver more in the fut
 
 ## Licenses
 
-This project is licensed under the [MIT License](LICENSE.md).
+This project is licensed under the [MIT License](LICENSE).
 
 This project includes third-party software, each with its own license. The full license texts can be found in the [LICENSES](./LICENSES/) directory.
 
