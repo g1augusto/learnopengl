@@ -47,8 +47,13 @@ import sys
 import pygame
 import moderngl
 import glm
+import itertools
 
-message = "-- c to enable/disable FACE CULLING"
+cullFaceOptions = ["back","front","front_and_back"]
+cullFace = itertools.cycle(cullFaceOptions)
+current_cullFace = next(cullFace)
+message = f"-- c to enable/disable FACE CULLING ({current_cullFace})"
+
 class Camera():
     '''
     Camera Class:
@@ -184,6 +189,7 @@ depth_test = True
 
 # set face culling enabled
 context.enable(moderngl.CULL_FACE)
+context.cull_face = current_cullFace
 face_culling = True
 
 # Set OpenGL Blending 
@@ -359,10 +365,11 @@ FRAMERATE = 60
 
 
 
-pygame.display.set_caption(f"Click on the window to enable mouselook {message}")
+
 
 
 while True:
+    pygame.display.set_caption(f"Click on the window to enable mouselook {message}")
 
     # calculate the normalized delta time to affect movement consistently regardless FPS
     NormalizedDeltaTime = pygame.time.Clock().tick(FRAMERATE) * 0.001 * FRAMERATE_REFERENCE
@@ -516,9 +523,14 @@ while True:
                     context.enable(moderngl.DEPTH_TEST)
                     depth_test = True
             elif event.key == pygame.K_c:
+                if keys[pygame.K_LSHIFT] or keys[pygame.K_RIGHT]:
+                    current_cullFace = next(cullFace)
+                    context.cull_face = current_cullFace
+                    message = f"-- c to enable/disable FACE CULLING ({current_cullFace})"
                 if face_culling:
                     context.disable(moderngl.CULL_FACE)
                     face_culling = False
                 else:
                     context.enable(moderngl.CULL_FACE)
                     face_culling = True
+                    
