@@ -510,6 +510,7 @@ vec3 CalcDirLight(DirLight light, vec3 normalized, vec3 viewDirection)
     // view direction is calculated out of this function
     vec3 reflectDirection = reflect(-lightDirection, normalized); 
     float specular = pow(max(dot(viewDirection, reflectDirection), 0.0), material.shininess);
+    specular = diffuseImpact!=0?specular:0.0;
     vec3 specularComponent = light.specular * specular * vec3(texture(material.specular,TexCoords)); // we are using a specular map now instead of a single vector3
 
     vec3 result = ambientComponent + diffuseComponent + specularComponent;
@@ -531,10 +532,7 @@ vec3 CalcPointLight(PointLight light, vec3 normalized, vec3 FragPos, vec3 viewDi
     // Blinn Phong Addition
     vec3 halfwayDir = normalize(lightDirection + viewDirection);
     float specular = pow(max(dot(normalized,halfwayDir),0.0),material.shininess);
-    if (diffuseImpact <= 0.0)
-    {
-        specular = 0.0;
-    }
+    specular = diffuseImpact!=0?specular:0.0;
     //vec3 reflectDirection = reflect(-lightDirection, normalized); 
     //float specular = pow(max(dot(viewDirection, reflectDirection), 0.0), material.shininess);
     vec3 specularComponent = light.specular * specular * vec3(texture(material.specular,TexCoords)); // we are using a specular map now instead of a single vector3
@@ -572,6 +570,7 @@ vec3 CalcSpotLight(SpotLight light, vec3 normalized, vec3 FragPos, vec3 viewDire
     // Specular lighting
     vec3 reflectDirection = reflect(-lightDirection, normalized); 
     float spec = pow(max(dot(viewDirection, reflectDirection), 0.0), material.shininess);
+    spec = diffuseImpact!=0?spec:0.0;
     vec3 specular = light.specular * spec * vec3(texture(material.specular,TexCoords)); // we are using a specular map now instead of a single vector3
 
     // spotlight calculations : ambient light is excluded to have always some little light in the scene
