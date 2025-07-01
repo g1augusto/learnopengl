@@ -75,7 +75,7 @@ class Vertex:
     def size(self):
         size = ( glm.sizeof(self.Position) + glm.sizeof(self.Normal) + glm.sizeof(self.TexCoords) ) // 4
         #size = ( glm.sizeof(self.Position) + glm.sizeof(self.TexCoords) ) // 4
-        return size  
+        return size
 
 @dataclass
 class Texture:
@@ -122,7 +122,7 @@ class Mesh():
                 shader[uniform_name] = texture_unit
             
         
-        shader["material.shininess"] = 32.0
+        prog["material.shininess"] = 32.0
         # Render the mesh VAO with the passed shader
         self.vao.render()
 
@@ -369,6 +369,9 @@ pygame.init()
 pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION,3)
 pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION,3)
 pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK,pygame.GL_CONTEXT_PROFILE_CORE)
+# Request an sRGB-capable window 
+pygame.display.gl_set_attribute(pygame.GL_FRAMEBUFFER_SRGB_CAPABLE, 1)
+
 # Depth buffer bits
 pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 24)
 # Stencil buffer bits <-- IMPORTANT
@@ -377,7 +380,11 @@ pygame.display.gl_set_attribute(pygame.GL_STENCIL_SIZE, 8)
 # Create and initializize display
 screen_flags = pygame.OPENGL | pygame.RESIZABLE | pygame.DOUBLEBUF
 screen_display = pygame.display.set_mode(windowed_size,flags=screen_flags,vsync=vsync)
-
+### Multisampling 
+# This tells Pygame (and underlying SDL) to enable multisample buffers. A value of 1 requests their availability
+pygame.display.gl_set_attribute(pygame.GL_MULTISAMPLEBUFFERS, 1)
+# This specifies the desired number of samples for MSAA (e.g., N could be 2, 4, 8, etc.). The actual number of samples you get depends on your GPU's capabilities.
+pygame.display.gl_set_attribute(pygame.GL_MULTISAMPLESAMPLES,4)
 
 
 ### OpenGL section
@@ -391,6 +398,10 @@ context = moderngl.create_context()
 # https://moderngl.readthedocs.io/en/latest/reference/context.html#Context.enable
 context.enable(moderngl.DEPTH_TEST)
 depth_test = True
+# Enable/disable multisample mode (GL_MULTISAMPLE)
+multisample = True
+context.multisample = True
+num_fbo_msaa_samples = 4
 
 # Define Vertex Shader and Fragment Shader in ModernGL (GLSL language)
 # ModernGL abstracts vertex and fragment shader as specific parameter of the context program method
@@ -860,6 +871,13 @@ offscreen_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)
 offscreen_depth = context.depth_texture(windowed_size)
 framebuffer_object = context.framebuffer(color_attachments=[offscreen_texture],depth_attachment=offscreen_depth)
 
+# 1. Create attachments for a MULTISAMPLED FBO
+msaa_color_texture = context.texture(windowed_size, 4, samples=num_fbo_msaa_samples)
+msaa_depth_attachment = context.depth_texture(windowed_size, samples=num_fbo_msaa_samples)
+
+# 2. Create the MULTISAMPLED FBO (Anti Aliasing will be rendered here)
+msaa_framebuffer_object = context.framebuffer(color_attachments=[msaa_color_texture],depth_attachment=msaa_depth_attachment)
+
 fbo_vertex_shader = '''
 #version 330 core
 layout (location = 0) in vec2 aPos;
@@ -1067,7 +1085,7 @@ quad_buffer_data = [
 ]
 
 # uses Python's struct module to pack the list of floating-point numbers into a byte string
-# '32f': This is the format string. It specifies that we want to pack 32 floating-point numbers (f for float)
+# '24f': This is the format string. It specifies that we want to pack 24 floating-point numbers (f for float)
 # The * operator unpacks the vertices list, passing each element as a separate argument to struct.pack
 fbo_vertices_binaryformat = struct.pack(f"{len(quad_buffer_data)}f",*quad_buffer_data)
 
@@ -1106,11 +1124,35 @@ fbo_current_vao = fbo_vao
 fbo_current_program = prog_fbo
 #######################
 
+
 while True:
-    ### FRAMEBUFFER object set in use and clear
-    framebuffer_object.use()
+    # Enable gamma correction (by defaul on the default screen framebuffer)
+    # The linear-to-sRGB conversion only happens if two conditions are met simultaneously
+    # ctx.srgb_write is True.
+    # The destination framebuffer you are rendering to is sRGB-capable.
+    # This makes handling different rendering passes simple and elegant.
+    # --> Simple Case: Rendering Directly to the Screen
+    #       If you are not using any custom framebuffers (FBOs), you're always rendering to the screen. 
+    #       Since you configured the screen to be sRGB-capable, the conversion will always happen correctly. 
+    #       You are always rendering to the "last pass."
+    # --> Advanced Case: Using Framebuffers (Multiple Passes)
+    #       This is where the automatic behavior really shines. Imagine you're doing a post-processing effect:
+    #       Pass 1: Render to an FBO. You create a custom framebuffer with a standard, linear texture attachment. You render your main scene to this FBO.
+    #       ctx.srgb_write is True.
+    #       The FBO's texture is not sRGB-capable.
+    #       Result: No sRGB conversion happens. Your texture correctly stores the scene's linear colors.
+    #       Pass 2: Render to the Screen. You render a full-screen quad using the texture from your FBO. The destination is now the main screen.
+    #       ctx.srgb_write is still True.
+    #       The screen's framebuffer is sRGB-capable.
+    #       Result: The hardware automatically converts the final color to sRGB.
+
+
+    ### FRAMEBUFFER object set in use and clear (THIS TIME WE USE THE MultiSampled Anti Aliasing MSAA FBO)
+    # Later we will copy the MSAA FBO into a standard FBO that supports postprocessing
+    # MultiSampled Framebuffers and Textures cannot be passed to a shader for postprocessing
+    msaa_framebuffer_object.use()
     # clear the framebuffer
-    framebuffer_object.clear(color=(1, 1, 1, 1.0), depth=1.0)
+    msaa_framebuffer_object.clear(color=(1, 1, 1, 1.0), depth=1.0)
 
     
     # Directional Light (1 for the whole scene)
@@ -1212,6 +1254,11 @@ while True:
         progLight["model"].write(matrix_bytes(modelLight))
         # render the lightbox
         lightvao.render()
+
+
+    # 2. RESOLVE MULTISAMPLED FBO TO REGULAR FBO
+    # This transfers the antialiased image from msaa_framebuffer_object to resolve_fbo (and thus resolve_texture).
+    context.copy_framebuffer(dst=framebuffer_object, src=msaa_framebuffer_object)
 
     ### FRAMEBUFFER render back to screen with default framebuffer
     # context.screen is the default framebuffer
@@ -1376,3 +1423,7 @@ while True:
             elif event.key == pygame.K_5:
                 fbo_current_vao = fbo_vao_kernel_edges
                 fbo_current_program = prog_fbo_kernel_edges
+            elif event.key == pygame.K_6:
+                multisample = not multisample
+                context.multisample = multisample
+                print(f"Multisample: {multisample}")
