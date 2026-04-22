@@ -55,8 +55,10 @@ import glm
 
 new_path = os.getcwd() + os.pathsep + os.environ.get('PATH', '')
 os.environ['PATH'] = new_path
-from itertools import zip_longest 
-from OpenGL.GL import * class Camera():
+
+from OpenGL.GL import * 
+
+class Camera():
     YAW = -90.0
     PITCH = 0.0
     SPEED = 0.05
