@@ -179,7 +179,7 @@ class TextRenderer():
         self.text_height = float(text_surface_pygame.get_height())
         
         # image_data is flipped vertically to match OpenGL's texture coord convention (0,0 at bottom-left)
-        image_data = pygame.image.tostring(text_surface_pygame, "RGBA", False) 
+        image_data = pygame.image.tostring(text_surface_pygame, "RGBA", False)
 
         if self.text_texture:
             self.text_texture.release()

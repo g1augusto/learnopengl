@@ -549,6 +549,9 @@ pygame.display.set_caption("Click on the window to enable mouselook")
 depthMap = context.depth_texture(windowed_size)
 framebuffer_object = context.framebuffer(depth_attachment=depthMap)
 
+
+clock = pygame.time.Clock()
+
 # generic light position
 lightPos = glm.vec3(-2.0, 4.0, -1.0);
 while True:
@@ -625,7 +628,9 @@ while True:
     prog["model"].write(matrix_bytes(model))
     cubevao.render()
     # calculate the normalized delta time to affect movement consistently regardless FPS
-    NormalizedDeltaTime = pygame.time.Clock().tick(FRAMERATE) * 0.001 * FRAMERATE_REFERENCE
+
+    NormalizedDeltaTime = clock.tick(FRAMERATE) * 0.001 * FRAMERATE_REFERENCE
+    #print(f"FPS: {clock.get_fps():.2f} | Normalized Delta Time: {NormalizedDeltaTime:.4f}")
 
 
 
