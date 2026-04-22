@@ -922,7 +922,7 @@ cam = Camera(glm.vec3(0.0, 0.0, 55.0))
 
 # Reference variables for Delta time
 FRAMERATE_REFERENCE = 60
-FRAMERATE = 60
+FRAMERATE = 0 # Set framerate to 0 to let it run as fast as possible, otherwise set it to the desired frame rate (e.g., 60)
 
 
 amount:int = 20000

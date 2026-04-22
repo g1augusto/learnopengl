@@ -882,7 +882,6 @@ cubemap_images_bytes = [pygame.image.tobytes(x,"RGB",False) for x in cubemap_ima
 # here we create the cubemap texture made of the 6 images byte sequence concatenated via the join method (as it was a string)
 # please note the b'' indicating a binary formatted empty string to which we contatenate with join all elements of the cubemap_image_bytes list
 cubemapTexture = context.texture_cube(cubemap_images[0].get_size(),3,b''.join(cubemap_images_bytes))
-
 # Set filtering to GL_LINEAR for both minification and magnification
 cubemapTexture.filter = (moderngl.LINEAR, moderngl.LINEAR)
 

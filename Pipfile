@@ -10,6 +10,8 @@ pygame = "==2.6.1"
 pyglm = "==2.8.2"
 pyassimp = "*"
 setuptools = "*"
+pyopengl = "*"
+glfw = "*"
 
 [dev-packages]
 

@@ -192,7 +192,8 @@ context = moderngl.create_context()
 context.enable(moderngl.DEPTH_TEST)
 depth_test = True
 
-
+# Pass 1 Shaders: Creating the Depth Map
+# This pass only needs to calculate the position of vertices from the light's point of view and record their depth. It's very simple.
 simpleDepthShader = context.program(
     vertex_shader='''
 #version 330 core
@@ -203,6 +204,7 @@ uniform mat4 model;
 
 void main()
 {
+    // 1. Transform vertex to light's clip space. This is the only step needed.
     gl_Position = lightSpaceMatrix * model * vec4(aPos, 1.0);
 }
 ''',
@@ -256,62 +258,207 @@ void main()
 '''
 )
 
-#### NORMALS AND TEX COORDINATES NEEDED TO BE REMOVED SINCE PADDING WAS NOT WORKING 
-#### WHEN DEFINING THE VBO PARAMETERS
-planeVertices = [
-        #// positions            // normals         // texcoords
-         25.0, -0.5,  25.0, 
-        -25.0, -0.5,  25.0,  
-        -25.0, -0.5, -25.0,  
+# --> Final Scene Rendering with Shadows
+# VERTEX SHADER
+# This shader is a standard vertex shader, but it does one extra thing: 
+# it calculates the fragment's position from the light's point of view and passes it to the fragment shader.
+# FragPosLightSpace = lightSpaceMatrix * vec4(FragPos, 1.0);
+# This is the key line. It takes the fragment's world position (FragPos) and transforms it into 
+# the light's coordinate space. The result is passed to the fragment shader via the FragPosLightSpace output variable.
 
-         25.0, -0.5,  25.0,  
-        -25.0, -0.5, -25.0, 
-         25.0, -0.5, -25.0,  
+prog = context.program(
+    vertex_shader='''
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoords;
+
+out vec2 TexCoords;
+
+out VS_OUT {
+    vec3 FragPos;
+    vec3 Normal;
+    vec2 TexCoords;
+    vec4 FragPosLightSpace;
+} vs_out;
+
+uniform mat4 projection;
+uniform mat4 view;
+uniform mat4 model;
+uniform mat4 lightSpaceMatrix;
+
+void main()
+{
+    vs_out.FragPos = vec3(model * vec4(aPos, 1.0));
+    vs_out.Normal = transpose(inverse(mat3(model))) * aNormal;
+    vs_out.TexCoords = aTexCoords;
+    vs_out.FragPosLightSpace = lightSpaceMatrix * vec4(vs_out.FragPos, 1.0);
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+''',
+# FRAGMENT SHADER
+# This shader receives the transformed position, performs the depth comparison, and determines the final color.
+# ShadowCalculation(FragPosLightSpace): This function contains all the core shadow logic.
+# Steps 3 & 4: projCoords is calculated and transformed so it can be used to sample the shadowMap texture.
+# Step 5: texture(shadowMap, projCoords.xy).r looks up the depth of the closest object from the light's perspective.
+# Step 6: currentDepth = projCoords.z gets the current fragment's depth from the light's perspective.
+# Step 8: currentDepth - bias > closestDepth is the final comparison that determines if the fragment is behind another object and therefore in shadow.
+#         (1.0 - shadow): This is how the shadow is applied. If the fragment is in shadow, shadow is 1.0, and (1.0 - 1.0) is 0, 
+#         so diffuse and specular lighting are canceled out. If it's not in shadow, shadow is 0, and the lighting is applied normally.
+fragment_shader='''
+#version 330 core
+out vec4 FragColor;
+
+in VS_OUT {
+    vec3 FragPos;
+    vec3 Normal;
+    vec2 TexCoords;
+    vec4 FragPosLightSpace;
+} fs_in;
+
+uniform sampler2D diffuseTexture;
+uniform sampler2D shadowMap;
+
+uniform vec3 lightPos;
+uniform vec3 viewPos;
+
+float ShadowCalculation(vec4 fragPosLightSpace)
+{
+    // perform perspective divide
+    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+    // transform to [0,1] range
+    projCoords = projCoords * 0.5 + 0.5;
+    // get closest depth value from light's perspective (using [0,1] range fragPosLight as coords)
+    float closestDepth = texture(shadowMap, projCoords.xy).r; 
+    // get depth of current fragment from light's perspective
+    float currentDepth = projCoords.z;
+    // calculate bias (based on depth map resolution and slope)
+    vec3 normal = normalize(fs_in.Normal);
+    vec3 lightDir = normalize(lightPos - fs_in.FragPos);
+    float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
+    // check whether current frag pos is in shadow
+    // float shadow = currentDepth - bias > closestDepth  ? 1.0 : 0.0;
+    // PCF
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / textureSize(shadowMap, 0);
+    for(int x = -1; x <= 1; ++x)
+    {
+        for(int y = -1; y <= 1; ++y)
+        {
+            float pcfDepth = texture(shadowMap, projCoords.xy + vec2(x, y) * texelSize).r; 
+            shadow += currentDepth - bias > pcfDepth  ? 1.0 : 0.0;        
+        }    
+    }
+    shadow /= 9.0;
+    
+    // keep the shadow at 0.0 when outside the far_plane region of the light's frustum.
+    if(projCoords.z > 1.0)
+        shadow = 0.0;
+        
+    return shadow;
+}
+
+void main()
+{           
+    vec3 color = texture(diffuseTexture, fs_in.TexCoords).rgb;
+    vec3 normal = normalize(fs_in.Normal);
+    vec3 lightColor = vec3(0.3);
+    // ambient
+    vec3 ambient = 0.3 * lightColor;
+    // diffuse
+    vec3 lightDir = normalize(lightPos - fs_in.FragPos);
+    float diff = max(dot(lightDir, normal), 0.0);
+    vec3 diffuse = diff * lightColor;
+    // specular
+    vec3 viewDir = normalize(viewPos - fs_in.FragPos);
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = 0.0;
+    vec3 halfwayDir = normalize(lightDir + viewDir);  
+    spec = pow(max(dot(normal, halfwayDir), 0.0), 64.0);
+    vec3 specular = spec * lightColor;    
+    // calculate shadow
+    float shadow = ShadowCalculation(fs_in.FragPosLightSpace);                      
+    vec3 lighting = (ambient + (1.0 - shadow) * (diffuse + specular)) * color;    
+    
+    FragColor = vec4(lighting, 1.0);
+}
+'''
+)
+
+# Addendum for fragment shader:
+# a) projCoords = projCoords * 0.5 + 0.5;
+#    After the perspective divide (fragPosLightSpace.xyz / fragPosLightSpace.w), the projCoords are in a standard 
+#    OpenGL space called Normalized Device Coordinates (NDC). In this space, the visible coordinates 
+#    for x, y, and z all range from -1.0 to 1.0. 
+#    However, to look up a value in a texture (like our shadowMap), we need to use Texture Coordinates. 
+#    Texture coordinates range from 0.0 to 1.0, where (0, 0) is the bottom-left corner of the texture and (1, 1) is the top-right. 
+#    So, we have coordinates in a [-1, 1] range that we need to convert to a [0, 1] range.
+#
+# b) float closestDepth = texture(shadowMap, projCoords.xy).r;
+#    That's an excellent question that highlights a key detail about how textures work in shaders.
+#    The .r is used because the texture() function in GLSL always returns a 4-component vector (vec4) 
+#    representing the RGBA (Red, Green, Blue, Alpha) color of the texture at the given coordinates.
+#    Even though our shadowMap is a special depth texture that only stores a single depth value per pixel, 
+#    the texture() function still treats it like a color texture. 
+#    When it reads the single depth value, it places that same value into the R, G, and B components of 
+#    the vec4 it returns.
+#    So, if the stored depth is 0.6, texture(shadowMap, projCoords.xy) would return a vec4 like (0.6, 0.6, 0.6, 1.0)
+
+
+planeVertices = [
+        #// positions        // normals      // texcoords
+         25.0, -0.5,  25.0,  0.0, 1.0, 0.0,  25.0,  0.0,
+        -25.0, -0.5,  25.0,  0.0, 1.0, 0.0,   0.0,  0.0,
+        -25.0, -0.5, -25.0,  0.0, 1.0, 0.0,   0.0, 25.0,
+
+         25.0, -0.5,  25.0,  0.0, 1.0, 0.0,  25.0,  0.0,
+        -25.0, -0.5, -25.0,  0.0, 1.0, 0.0,   0.0, 25.0,
+         25.0, -0.5, -25.0,  0.0, 1.0, 0.0,  25.0, 25.0
 ]
 
 vertices = [
             # back face
-            -1.0, -1.0, -1.0, 
-             1.0,  1.0, -1.0,  
-             1.0, -1.0, -1.0,          
-             1.0,  1.0, -1.0, 
-            -1.0, -1.0, -1.0,  
-            -1.0,  1.0, -1.0, 
-            # ront ace
-            -1.0, -1.0,  1.0,  
-             1.0, -1.0,  1.0, 
-             1.0,  1.0,  1.0,  
-             1.0,  1.0,  1.0,  
-            -1.0,  1.0,  1.0, 
-            -1.0, -1.0,  1.0, 
-            # let ace
-            -1.0,  1.0,  1.0, 
-            -1.0,  1.0, -1.0, 
-            -1.0, -1.0, -1.0, 
-            -1.0, -1.0, -1.0, 
-            -1.0, -1.0,  1.0, 
-            -1.0,  1.0,  1.0, 
-            # right ace
-             1.0,  1.0,  1.0,  
-             1.0, -1.0, -1.0,  
-             1.0,  1.0, -1.0, 
-             1.0, -1.0, -1.0,  
-             1.0,  1.0,  1.0,  
-             1.0, -1.0,  1.0,  
-            # bottom ace
-            -1.0, -1.0, -1.0,  
-             1.0, -1.0, -1.0, 
-             1.0, -1.0,  1.0,  
-             1.0, -1.0,  1.0, 
-            -1.0, -1.0,  1.0,  
-            -1.0, -1.0, -1.0,  
-            # top ace
-            -1.0,  1.0, -1.0, 
-             1.0,  1.0 , 1.0, 
-             1.0,  1.0, -1.0, 
-             1.0,  1.0,  1.0,  
-            -1.0,  1.0, -1.0,  
-            -1.0,  1.0,  1.0,   
+            -1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 0.0, # bottom-left
+             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 1.0, # top-right
+             1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 0.0, # bottom-right         
+             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 1.0, # top-right
+            -1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 0.0, # bottom-left
+            -1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 1.0, # top-left
+            # front face
+            -1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 0.0, # bottom-left
+             1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 0.0, # bottom-right
+             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 1.0, # top-right
+             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 1.0, # top-right
+            -1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 1.0, # top-left
+            -1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 0.0, # bottom-left
+            # left face
+            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 1.0, 0.0, # top-right
+            -1.0,  1.0, -1.0, -1.0,  0.0,  0.0, 1.0, 1.0, # top-left
+            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 1.0, # bottom-left
+            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 1.0, # bottom-left
+            -1.0, -1.0,  1.0, -1.0,  0.0,  0.0, 0.0, 0.0, # bottom-right
+            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 1.0, 0.0, # top-right
+            # right face
+             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 1.0, 0.0, # top-left
+             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 1.0, # bottom-right
+             1.0,  1.0, -1.0,  1.0,  0.0,  0.0, 1.0, 1.0, # top-right         
+             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 1.0, # bottom-right
+             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 1.0, 0.0, # top-left
+             1.0, -1.0,  1.0,  1.0,  0.0,  0.0, 0.0, 0.0, # bottom-left     
+            # bottom face
+            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 1.0, # top-right
+             1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 1.0, 1.0, # top-left
+             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 1.0, 0.0, # bottom-left
+             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 1.0, 0.0, # bottom-left
+            -1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 0.0, 0.0, # bottom-right
+            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 1.0, # top-right
+            # top face
+            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 1.0, # top-left
+             1.0,  1.0 , 1.0,  0.0,  1.0,  0.0, 1.0, 0.0, # bottom-right
+             1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 1.0, 1.0, # top-right     
+             1.0,  1.0,  1.0,  0.0,  1.0,  0.0, 1.0, 0.0, # bottom-right
+            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 1.0, # top-left
+            -1.0,  1.0,  1.0,  0.0,  1.0,  0.0, 0.0, 0.0  # bottom-left 
         ]
 
 quadVertices = [
@@ -329,11 +476,15 @@ cube_vertices_binaryformat = struct.pack(f"{len(vertices)}f",*vertices)
 
 # Define VBO (Vertex Buffer Object) containing vertex data
 cubevbo = context.buffer(cube_vertices_binaryformat)
+cubevbo_parameters_depth = [
+    (cubevbo,"3f 5x4","aPos")
+]
 cubevbo_parameters = [
-    (cubevbo,"3f","aPos")
+    (cubevbo,"3f 3f 2f","aPos","aNormal","aTexCoords")
 ]
 
-cubevao = context.vertex_array(simpleDepthShader,cubevbo_parameters)
+cubevao_depth = context.vertex_array(simpleDepthShader,cubevbo_parameters_depth)
+cubevao = context.vertex_array(prog,cubevbo_parameters)
 
 
 
@@ -341,11 +492,16 @@ plane_vertices_binaryformat = struct.pack(f"{len(planeVertices)}f",*planeVertice
 
 # Define VBO (Vertex Buffer Object) containing vertex data
 planevbo = context.buffer(plane_vertices_binaryformat)
-plabevbo_parameters = [
-    (planevbo,"3f","aPos")
+planevbo_parameters_depth = [
+    (planevbo,"3f 5x4","aPos")
+]
+planevbo_parameters = [
+    (planevbo,"3f 3f 2f","aPos","aNormal","aTexCoords")
 ]
 
-planevao = context.vertex_array(simpleDepthShader,plabevbo_parameters)
+planevao_depth = context.vertex_array(simpleDepthShader,planevbo_parameters_depth)
+planevao = context.vertex_array(prog,planevbo_parameters)
+
 
 # Floor Load image
 floorImage = pygame.image.load("./assets/wood.png")
@@ -396,6 +552,9 @@ framebuffer_object = context.framebuffer(depth_attachment=depthMap)
 # generic light position
 lightPos = glm.vec3(-2.0, 4.0, -1.0);
 while True:
+    time_sec = pygame.time.get_ticks() / 1000.0
+    radius = 2.5
+    moving_cube_pos = glm.vec3(math.cos(time_sec) * radius, 1.5, math.sin(time_sec) * radius)
 
     #################### RENDER TO DEPTH MAP FRAMEBUFFER
     near_plane = 1.0
@@ -409,37 +568,65 @@ while True:
     # floor
     model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
     simpleDepthShader["model"].write(matrix_bytes(model))
-    planevao.render()
+    planevao_depth.render()
     # cubes
     model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
-    model = glm.translate(model,glm.vec3(0.0, 1.5, 0.0))
+    model = glm.translate(model,moving_cube_pos)
     model = glm.scale(model, glm.vec3(0.5))
     simpleDepthShader["model"].write(matrix_bytes(model))
-    cubevao.render()
+    cubevao_depth.render()
     #
     model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
     model = glm.translate(model,glm.vec3(2.0, 0.0, 1.0))
     model = glm.scale(model, glm.vec3(0.5))
     simpleDepthShader["model"].write(matrix_bytes(model))
-    cubevao.render()
+    cubevao_depth.render()
     #
     model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
     model = glm.translate(model,glm.vec3(-1.0, 0.0, 2.0))
     model = glm.rotate(model, glm.radians(60.0), glm.normalize(glm.vec3(1.0, 0.0, 1.0)))
     model = glm.scale(model, glm.vec3(0.25))
     simpleDepthShader["model"].write(matrix_bytes(model))
-    cubevao.render()
+    cubevao_depth.render()
 
     #################### RENDER TO DEFAULT SCREEN FRAMEBUFFER
     context.viewport = (0,0,windowed_size[0],windowed_size[1])
     ### FRAMEBUFFER object set in use and clear
     context.screen.use()
-    #debugDepthQuad["near_plane"] = near_plane
-    #debugDepthQuad["far_plane"] = far_plane
+    cam.updateCameraVectors()
+    view = cam.GetViewMatrix()
+    projection = glm.perspective(glm.radians(cam.zoom),windowed_size[0] / windowed_size[1], 0.1, 100.0)   
+    prog["projection"].write(matrix_bytes(projection))
+    prog["view"].write(matrix_bytes(view))
+    prog["viewPos"].value = cam.cameraPos
+    prog["lightPos"].value = lightPos
+    prog["lightSpaceMatrix"].write(matrix_bytes(lightSpaceMatrix))
     depthMap.use(location=0)
-    debugDepthQuad["depthMap"] = 0
-    quadvao.render(mode=moderngl.TRIANGLE_STRIP)
-
+    prog["shadowMap"] = 0
+    floorTexture.use(location=1)
+    prog["diffuseTexture"] = 1
+    model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
+    prog["model"].write(matrix_bytes(model))
+    planevao.render()
+    # cubes
+    model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
+    model = glm.translate(model,moving_cube_pos)
+    model = glm.scale(model, glm.vec3(0.5))
+    prog["model"].write(matrix_bytes(model))
+    cubevao.render()
+    #
+    model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
+    model = glm.translate(model,glm.vec3(2.0, 0.0, 1.0))
+    model = glm.scale(model, glm.vec3(0.5))
+    prog["model"].write(matrix_bytes(model))
+    cubevao.render()
+    #
+    model = glm.mat4(1.0) # identity matrix (1.0 at the diagonal)
+    model = glm.translate(model,glm.vec3(-1.0, 0.0, 2.0))
+    model = glm.rotate(model, glm.radians(60.0), glm.normalize(glm.vec3(1.0, 0.0, 1.0)))
+    model = glm.scale(model, glm.vec3(0.25))
+    prog["model"].write(matrix_bytes(model))
+    cubevao.render()
     # calculate the normalized delta time to affect movement consistently regardless FPS
     NormalizedDeltaTime = pygame.time.Clock().tick(FRAMERATE) * 0.001 * FRAMERATE_REFERENCE
 
@@ -484,9 +671,9 @@ while True:
                 pygame.display.set_caption("Mouselook enabled - F11 to release")
         elif event.type == pygame.MOUSEWHEEL: # event to capture the mouse wheel
             if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
-                lightYdelta += (event.y / 10) # move vertically the light
+                lightYdelta += (event.y / 50) # move vertically the light
             elif keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                lightRadiusDelta += (event.y / 10) # change the radius of the light rotation
+                lightRadiusDelta += (event.y / 50) # change the radius of the light rotation
             elif keys[pygame.K_SPACE]:
                 SpotCutOffAngle += event.y
                 SpotOuterCutOffAngle += event.y
@@ -505,60 +692,6 @@ while True:
                 # start/stop spinning light
                 moveLight = not moveLight
                 print(f"camera move: {moveLight}")
-            elif event.key == pygame.K_F3:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # increase light Constant attentuation
-                    lightConstant += 0.1
-                    print(f"light constant attenuation: {lightConstant}")
-                else:
-                    # increase ambient light
-                    if ambientStrength<1.0: ambientStrength += 0.1
-                    print(f"ambient light {ambientStrength}")
-            elif event.key == pygame.K_F4:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # decrease light Constant attentuation
-                    lightConstant -= 0.1
-                    print(f"light constant attenuation: {lightConstant}")
-                else:
-                    # decrease ambient light
-                    if ambientStrength>0.0: ambientStrength -= 0.1
-                    print(f"ambient light {ambientStrength}")
-            elif event.key == pygame.K_F5:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # increase light Linear attentuation
-                    lightLinear += 0.1
-                    print(f"light linear attenuation: {lightLinear}")
-                else:
-                    # increase diffuse light
-                    if diffuseStrength<1.0: diffuseStrength += 0.1
-                    print(f"diffuse light: {diffuseStrength}")
-            elif event.key == pygame.K_F6:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # decrease light Linear attentuation
-                    lightLinear -= 0.1
-                    print(f"light linear attenuation: {lightLinear}")
-                else:
-                    # decrease diffuse light
-                    if diffuseStrength>0.0: diffuseStrength -= 0.1
-                    print(f"diffuse light: {diffuseStrength}")
-            elif event.key == pygame.K_F7:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # increase light quadratic attentuation
-                    lightQuadratic += 0.1
-                    print(f"light quadratic attenuation: {lightQuadratic}")
-                else:
-                    # increase specular light
-                    if specularStrength<1.0: specularStrength += 0.1
-                    print(f"specular light: {specularStrength}")
-            elif event.key == pygame.K_F8:
-                if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
-                    # increase light quadratic attentuation
-                    lightQuadratic -= 0.1
-                    print(f"light quadratic attenuation: {lightQuadratic}")
-                else:
-                    # decrease specular light
-                    if specularStrength>0.0: specularStrength -= 0.1
-                    print(f"specular light: {specularStrength}")
             elif event.key == pygame.K_F9:
                 if depth_test:
                     context.disable(moderngl.DEPTH_TEST)
@@ -574,10 +707,5 @@ while True:
                 pygame.mouse.set_visible(True)
                 pygame.display.set_caption("Click on the window to enable mouselook")
             elif event.key == pygame.K_F12:
-                # reload the model and invert the flip texture option
-                flip = not ourModel.flipTexture
-                del ourModel
-                ourModel = Model(context,prog,modelFile,flipTexture=flip)
-            elif event.key == pygame.K_l:
-                spotLightOn = not spotLightOn
-
+                blinnEnabled = not blinnEnabled
+                print(f"Blinn Enabled {blinnEnabled}")
