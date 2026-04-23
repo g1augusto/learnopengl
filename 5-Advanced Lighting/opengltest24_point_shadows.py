@@ -48,6 +48,7 @@ import math
 import ctypes
 import struct
 import sys
+import time
 import pygame
 import moderngl
 import glm
@@ -232,6 +233,13 @@ void main()
 '''
 )
 
+# --- DIDACTIC GUIDE: DATA-DRIVEN SHADERS ---
+# We previously multiplied aTexCoords * 5.0 here to shrink the floorboards. 
+# However, applying scale globally in the Vertex Shader ruins the UV mapping for 
+# complex 3D models (like characters loaded via pyAssimp).
+# We have reverted this back to 'vs_out.TexCoords = aTexCoords;'. The Shader is now 
+# "dumb" and universal. The 5.0x scaling is now baked directly into the data 
+# (the vertices array below), keeping our pipeline flexible for future models.
 RenderShader = context.program(
     vertex_shader='''
 #version 330 core
@@ -261,14 +269,7 @@ void main()
     else
         vs_out.Normal = transpose(inverse(mat3(model))) * aNormal;
         
-    // --- DIDACTIC GUIDE: TEXTURE SCALE ILLUSION ---
-    // UV coordinates typically map from 0.0 to 1.0. Stretching a small texture (like a few
-    // floorboards) across a massive 10x10 3D wall creates an optical illusion, tricking
-    // the human brain into perceiving the 3D room as microscopic (a "zoomed in" effect).
-    // Multiplying the coordinates by 5.0 forces the texture to tile/repeat 5 times,
-    // shrinking the visual floorboards to human scale and correcting the perceived FOV.
-    // --- TEXTURE SCALE FIX ---
-    vs_out.TexCoords = aTexCoords * 5.0; 
+    vs_out.TexCoords = aTexCoords; 
     
     gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
@@ -310,7 +311,7 @@ float ShadowCalculation(vec3 fragPos)
     // Shadow Bias: A high bias (e.g., 0.15) pushes the shadow map too far backward,
     // causing the shadow to detach from the object (an artifact known as Peter Panning).
     float shadow = 0.0;
-    float bias = 0.05; // --- BIAS FIX ---
+    float bias = 0.05; 
     int samples = 20;
     float viewDistance = length(viewPos - fragPos);
     float diskRadius = (1.0 + (viewDistance / far_plane)) / 25.0;
@@ -337,7 +338,6 @@ void main()
     // results in near pitch-black shadows (0.09). Pure black environments hide the
     // soft Percentage-Closer Filtering (PCF) blurs, making shadows look artificially sharp.
     // Setting lightColor to 1.0 properly illuminates the gray penumbra.
-    // --- LIGHT COLOR FIX ---
     vec3 lightColor = vec3(1.0); 
     
     // ambient
@@ -363,48 +363,54 @@ void main()
 '''
 )
 
+# --- DIDACTIC GUIDE: DATA-DRIVEN TEXTURE SCALING ---
+# The texture coordinates (the last two floats in each row) originally mapped from 0.0 to 1.0.
+# To achieve the 5x texture tile without corrupting the global shader logic, the UVs 
+# below have been explicitly updated to range from 0.0 to 5.0. 
+# In a robust engine, this room would use its own VBO, or the shader would receive 
+# a 'uvScale' uniform to scale instances independently.
 vertices = [
             # back face
             -1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 0.0, 
-             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 1.0, 
-             1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 0.0,          
-             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 1.0, 1.0, 
+             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 5.0, 5.0, 
+             1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 5.0, 0.0,          
+             1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 5.0, 5.0, 
             -1.0, -1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 0.0, 
-            -1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 1.0, 
+            -1.0,  1.0, -1.0,  0.0,  0.0, -1.0, 0.0, 5.0, 
             # front face
             -1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 0.0, 
-             1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 0.0, 
-             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 1.0, 
-             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 1.0, 1.0, 
-            -1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 1.0, 
+             1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 5.0, 0.0, 
+             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 5.0, 5.0, 
+             1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 5.0, 5.0, 
+            -1.0,  1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 5.0, 
             -1.0, -1.0,  1.0,  0.0,  0.0,  1.0, 0.0, 0.0, 
             # left face
-            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 1.0, 0.0, 
-            -1.0,  1.0, -1.0, -1.0,  0.0,  0.0, 1.0, 1.0, 
-            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 1.0, 
-            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 1.0, 
+            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 5.0, 0.0, 
+            -1.0,  1.0, -1.0, -1.0,  0.0,  0.0, 5.0, 5.0, 
+            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 5.0, 
+            -1.0, -1.0, -1.0, -1.0,  0.0,  0.0, 0.0, 5.0, 
             -1.0, -1.0,  1.0, -1.0,  0.0,  0.0, 0.0, 0.0, 
-            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 1.0, 0.0, 
+            -1.0,  1.0,  1.0, -1.0,  0.0,  0.0, 5.0, 0.0, 
             # right face
-             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 1.0, 0.0, 
-             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 1.0, 
-             1.0,  1.0, -1.0,  1.0,  0.0,  0.0, 1.0, 1.0,          
-             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 1.0, 
-             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 1.0, 0.0, 
+             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 5.0, 0.0, 
+             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 5.0, 
+             1.0,  1.0, -1.0,  1.0,  0.0,  0.0, 5.0, 5.0,          
+             1.0, -1.0, -1.0,  1.0,  0.0,  0.0, 0.0, 5.0, 
+             1.0,  1.0,  1.0,  1.0,  0.0,  0.0, 5.0, 0.0, 
              1.0, -1.0,  1.0,  1.0,  0.0,  0.0, 0.0, 0.0,     
             # bottom face
-            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 1.0, 
-             1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 1.0, 1.0, 
-             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 1.0, 0.0, 
-             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 1.0, 0.0, 
+            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 5.0, 
+             1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 5.0, 5.0, 
+             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 5.0, 0.0, 
+             1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 5.0, 0.0, 
             -1.0, -1.0,  1.0,  0.0, -1.0,  0.0, 0.0, 0.0, 
-            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 1.0, 
+            -1.0, -1.0, -1.0,  0.0, -1.0,  0.0, 0.0, 5.0, 
             # top face
-            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 1.0, 
-             1.0,  1.0 , 1.0,  0.0,  1.0,  0.0, 1.0, 0.0, 
-             1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 1.0, 1.0,     
-             1.0,  1.0,  1.0,  0.0,  1.0,  0.0, 1.0, 0.0, 
-            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 1.0, 
+            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 5.0, 
+             1.0,  1.0 , 1.0,  0.0,  1.0,  0.0, 5.0, 0.0, 
+             1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 5.0, 5.0,     
+             1.0,  1.0,  1.0,  0.0,  1.0,  0.0, 5.0, 0.0, 
+            -1.0,  1.0, -1.0,  0.0,  1.0,  0.0, 0.0, 5.0, 
             -1.0,  1.0,  1.0,  0.0,  1.0,  0.0, 0.0, 0.0  
         ]
 
@@ -458,7 +464,6 @@ cubemap_size = (1024,1024)
 # allowing the shader to receive the raw float values it expects.
 # 1. Create the final destination TextureCube
 depthCubemapTexture = context.depth_texture_cube(cubemap_size)
-# --- HARDWARE COMPARISON FIX ---
 depthCubemapTexture.compare_func = ''
 depthCubemapTexture.filter = (moderngl.LINEAR, moderngl.LINEAR)
 depthCubemapTexture.repeat_x = False
@@ -498,7 +503,6 @@ clock = pygame.time.Clock()
 # If an object moves in the visual pass but you forget to update the depth pass,
 # the shadow will physically detach from the object. Centralizing the draw calls into a
 # single function ensures the geometry is 100% synchronized across all passes.
-# --- DRY HELPER FUNCTION ---
 def renderScene(shader_program, vao):
     # room cube
     model = glm.mat4(1.0)
@@ -545,10 +549,22 @@ def renderScene(shader_program, vao):
     shader_program["model"].write(matrix_bytes(model))
     vao.render()
 
+# --- DIDACTIC GUIDE: HIGH-PRECISION TIMER SEED ---
+# Pygame's clock measures in integers. At high framerates, it frequently truncates to 0ms,
+# causing severe "time loss" where movement halts entirely. Using python's built-in 
+# high-resolution float timer prevents slow-motion logic bugs.
+last_time = time.perf_counter()
 
 while True:
     
-    # --- ANIMATED LIGHT FIX ---
+    # --- HIGH PRECISION TIME FIX ---
+    current_time = time.perf_counter()
+    delta_time_seconds = current_time - last_time
+    last_time = current_time
+    
+    # Multiply by 60 to map to your original FRAMERATE_REFERENCE 
+    NormalizedDeltaTime = delta_time_seconds * 60.0 
+
     time_seconds = pygame.time.get_ticks() / 1000.0
     lightPos.x = 0.0
     lightPos.y = 0.0
@@ -591,14 +607,21 @@ while True:
     # 'context.screen.viewport' automatically queries the OS for the true physical
     # dimensions, ensuring the OpenGL canvas maps 1:1 with the window pixels.
     #################### RENDER TO DEFAULT SCREEN FRAMEBUFFER
-    # --- VIEWPORT FIX ---
     context.viewport = context.screen.viewport
     context.screen.use()
     context.clear(color=(0.1, 0.1, 0.1), depth=1.0) # Made slightly brighter like C++ base color
     
     cam.updateCameraVectors()
     view = cam.GetViewMatrix()
-    projection = glm.perspective(glm.radians(cam.zoom),windowed_size[0] / windowed_size[1], 0.1, 100.0)   
+
+    # --- DIDACTIC GUIDE: TRUE ASPECT RATIO MATRICES ---
+    # Using a hardcoded 800/600 (4:3) aspect ratio inside the perspective matrix causes 
+    # a "fisheye" stretch effect if the physical OS window resolves to a wider 16:9 ratio.
+    # Dynamically reading the physical viewport prevents FoV distortion.
+    viewport_width = context.screen.viewport[2]
+    viewport_height = context.screen.viewport[3]
+    aspect_ratio = viewport_width / viewport_height
+    projection = glm.perspective(glm.radians(cam.zoom), aspect_ratio, 0.1, 100.0)   
     
     RenderShader["projection"].write(matrix_bytes(projection))
     RenderShader["view"].write(matrix_bytes(view))
@@ -615,7 +638,9 @@ while True:
     # Render scene for screen
     renderScene(RenderShader, cubevao)
     
-    NormalizedDeltaTime = clock.tick(0) * 0.001 * FRAMERATE_REFERENCE
+    # Note: NormalizedDeltaTime logic moved to high-precision block at top of loop.
+    # clock.tick(0) maintains the unbounded framing cycle without altering delta logic.
+    clock.tick(0)
     pygame.display.flip()
 
     keys = pygame.key.get_pressed()

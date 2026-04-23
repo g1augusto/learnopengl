@@ -61,18 +61,12 @@ from itertools import zip_longest # used for mesh data in processMesh
 
 
 class Camera():
-    '''
-    Camera Class:
-    Update first the vectors with updateCameraVectors()\n
-    Assign the VIEW matrix with the return value of GetViewMatrix()
-    '''
     YAW = -90.0
     PITCH = 0.0
     SPEED = 0.05
     TURNSPEED = 1.0
     SENSITIVITY = 0.1
     ZOOM = 45.0
-
 
     def __init__(self,cameraPos = glm.vec3(0.0, 0.0, 0.0), cameraUp = glm.vec3(0.0, 1.0, 0.0), yaw = YAW, pitch = PITCH):
         self.cameraTarget = glm.vec3(0.0, 0.0, -1.0)
@@ -89,7 +83,6 @@ class Camera():
         return glm.lookAt(self.cameraPos,self.cameraPos + self.cameraTarget, self.cameraUp)
     
     def updateCameraVectors(self):
-        # calculate the new Target vector
         direction = glm.vec3()
         direction.x = math.cos(glm.radians(self.yaw)) * math.cos(glm.radians(self.pitch))
         direction.y = math.sin(glm.radians(self.pitch))
@@ -98,13 +91,6 @@ class Camera():
 
 
     class Movement(Enum):
-        '''
-        Movement Enum subclass
-        Allows for the definition of specific readable format constants to use in movement
-        it's defined as a subclass of Camera since there is no need to use it outside
-        it cam be accessed like the following:\n
-        Camera.Movement.FORWARD
-        '''
         FORWARD = 1
         BACKWARD = 2
         TURN_LEFT = 3
@@ -114,57 +100,68 @@ class Camera():
         LOOK_UP = 7
         LOOK_DOWN = 8
     
-    def ProcessKeyboard(self,direction,deltaTime):
-        if not isinstance(direction,Camera.Movement): # check type
+    # --- DIDACTIC GUIDE: MOVEMENT MATH & DELTA TIME ---
+    # In frame-independent movement, velocity must be multiplied by deltaTime to ensure
+    # the camera moves at the same physical speed regardless of the frame rate.
+    # Notice that velocity is calculated ONCE at the top. Previously, the code multiplied
+    # by deltaTime a second time inside the specific movement branches (e.g., strafing),
+    # squaring the fraction and causing the camera to crawl at high frame rates.
+    def ProcessKeyboard(self, direction, deltaTime):
+        if not isinstance(direction, Camera.Movement): 
             raise ValueError
-        else:
-            velocity = self.MovementSpeed * deltaTime
-            turnVelocity = self.TurnSpeed * deltaTime
+        
+        velocity = self.MovementSpeed * deltaTime
+        turnVelocity = self.TurnSpeed * deltaTime
+        
         if direction == Camera.Movement.FORWARD:
             self.cameraPos += self.cameraTarget * velocity
         elif direction == Camera.Movement.BACKWARD:
             self.cameraPos -= self.cameraTarget * velocity
         elif direction == Camera.Movement.TURN_RIGHT:
-            self.yaw += turnVelocity * deltaTime
+            self.yaw += turnVelocity
         elif direction == Camera.Movement.TURN_LEFT:
-            self.yaw -= turnVelocity * deltaTime
+            self.yaw -= turnVelocity
         elif direction == Camera.Movement.STRIFE_RIGHT:
-            self.cameraPos += glm.normalize(glm.cross(self.cameraTarget,self.cameraUp)) * velocity * deltaTime
+            self.cameraPos += glm.normalize(glm.cross(self.cameraTarget, self.cameraUp)) * velocity
         elif direction == Camera.Movement.STRIFE_LEFT:
-            self.cameraPos -= glm.normalize(glm.cross(self.cameraTarget,self.cameraUp)) * velocity * deltaTime
+            self.cameraPos -= glm.normalize(glm.cross(self.cameraTarget, self.cameraUp)) * velocity
         elif direction == Camera.Movement.LOOK_UP:
-            self.pitch += turnVelocity * deltaTime
+            self.pitch += turnVelocity
         elif direction == Camera.Movement.LOOK_DOWN:
-            self.pitch -= turnVelocity * deltaTime
+            self.pitch -= turnVelocity
 
-    def ProcessMouseMovement(self,xoffset,yoffset,deltaTime,constrainPitch=True):
-        xoffset *= self.MouseSensitivity * deltaTime
-        yoffset *= self.MouseSensitivity * deltaTime
+    # --- DIDACTIC GUIDE: ABSOLUTE VS. RELATIVE INPUT ---
+    # Mouse movement (event.rel) and scroll wheel ticks return ABSOLUTE distances (pixels),
+    # not continuous speeds. Therefore, deltaTime must NOT be applied here.
+    # Multiplying absolute pixel movement by deltaTime causes mouse sensitivity to
+    # plummet at high frame rates and spike wildly at low frame rates.
+    def ProcessMouseMovement(self, xoffset, yoffset, constrainPitch=True):
+        xoffset *= self.MouseSensitivity 
+        yoffset *= self.MouseSensitivity 
+        
         self.yaw += xoffset
         self.pitch -= yoffset
+        
         if constrainPitch:
             if(self.pitch > 89.0):
                 self.pitch =  89.0
             if(self.pitch < -89.0):
                 self.pitch = -89.0      
 
-    def ProcessMouseScroll(self,yoffset,deltaTime):
-        self.zoom -= yoffset * deltaTime
+    def ProcessMouseScroll(self, yoffset):
+        self.zoom -= yoffset 
         if self.zoom < 1.0:
             self.zoom = 1.0
         if self.zoom > 45.0:
             self.zoom = 45.0
 
-
 class CameraFPS(Camera):
     def __init__(self, cameraPos=glm.vec3(0, 0, 0), cameraUp=glm.vec3(0, 1, 0), yaw=Camera.YAW, pitch=Camera.PITCH):
         super().__init__(cameraPos, cameraUp, yaw, pitch)
-    
-
+         
     def ProcessKeyboard(self,direction,deltaTime):
         super().ProcessKeyboard(direction=direction,deltaTime=deltaTime)
-        # make sure the user stays at the ground level
-        self.cameraPos.y = 0.0 # <-- this one-liner keeps the user at the ground level (xz plane)
+        self.cameraPos.y = 0.0 
 
 windowed_size = (800,600)
 vsync = False
@@ -351,8 +348,8 @@ float ShadowCalculation(vec4 fragPosLightSpace)
     }
     shadow /= 9.0;
     
-    // keep the shadow at 0.0 when outside the far_plane region of the light's frustum.
-    if(projCoords.z > 1.0)
+    // keep the shadow at 0.0 when outside the light's frustum (prevents repeating shadows)
+    if(projCoords.z > 1.0 || projCoords.x > 1.0 || projCoords.x < 0.0 || projCoords.y > 1.0 || projCoords.y < 0.0)
         shadow = 0.0;
         
     return shadow;
@@ -362,7 +359,7 @@ void main()
 {           
     vec3 color = texture(diffuseTexture, fs_in.TexCoords).rgb;
     vec3 normal = normalize(fs_in.Normal);
-    vec3 lightColor = vec3(0.3);
+    vec3 lightColor = vec3(1.0);
     // ambient
     vec3 ambient = 0.3 * lightColor;
     // diffuse
